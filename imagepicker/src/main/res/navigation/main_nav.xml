@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/main_nav"
+    app:startDestination="@id/bnv_gallery">
+
+    <fragment
+        android:id="@+id/bnv_camera"
+        android:name="com.bishal.imagepicker.gallery.CameraFragment"
+        android:label="CameraFragment"
+        tools:layout="@layout/fragment_camera" >
+
+    </fragment>
+    <fragment
+        android:id="@+id/bnv_gallery"
+        android:name="com.bishal.imagepicker.gallery.GalleryFragment"
+        android:label="fragment_gallery"
+        tools:layout="@layout/fragment_gallery" >
+        <action
+            android:id="@+id/action_bnv_gallery_to_bnv_camera"
+            app:destination="@id/bnv_camera" />
+        <action
+            android:id="@+id/action_bnv_gallery_to_multiSelectFragment"
+            app:destination="@id/multiSelectFragment" />
+
+    </fragment>
+    <fragment
+        android:id="@+id/multiSelectFragment"
+        android:name="com.bishal.imagepicker.multiselect.MultiSelectFragment"
+        android:label="fragment_multi_select"
+        tools:layout="@layout/fragment_multi_select" >
+
+    </fragment>
+
+</navigation>

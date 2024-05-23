@@ -1,0 +1,289 @@
+package com.bishal.imagepicker.gallery
+
+import android.Manifest.permission.CAMERA
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
+import android.provider.Settings
+import android.view.*
+import android.widget.Toast
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.camera.core.*
+import androidx.camera.core.ImageCapture.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.NavHostFragment
+import com.bishal.imagepicker.R
+import com.bishal.imagepicker.classes.InstaPickerSharedPreference
+import com.bishal.imagepicker.databinding.FragmentCameraBinding
+import com.google.android.material.appbar.MaterialToolbar
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
+enum class FlashMode {
+    FLASH_ON,
+    FLASH_OFF,
+    FLASH_AUTO
+}
+
+class CameraFragment : Fragment() {
+
+    companion object {
+        private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+    }
+
+    private lateinit var cameraPermission: ActivityResultLauncher<String>
+    private lateinit var b: FragmentCameraBinding
+    private var isFront = false
+    private var imageCapture: ImageCapture? = null
+    private var flash = FlashMode.FLASH_OFF
+    private lateinit var outputDirectory: File
+    private lateinit var cameraExecutor: ExecutorService
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        cameraExecutor = Executors.newSingleThreadExecutor()
+        cameraPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            if (it)
+                initCamera()
+            else
+                NavHostFragment.findNavController(this).popBackStack()
+        }
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View {
+        b = FragmentCameraBinding.inflate(inflater, container, false)
+        return b.root
+    }
+
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        requireActivity().findViewById<MaterialToolbar>(R.id.select_toolbar).visibility = View.GONE
+        setupPermissions()
+    }
+
+    private fun setupPermissions() {
+        val permission = ContextCompat.checkSelfPermission(
+            requireContext(),
+            CAMERA
+        )
+
+        if (permission != PackageManager.PERMISSION_GRANTED) {
+            if (ActivityCompat.shouldShowRequestPermissionRationale(
+                    requireActivity(),
+                    CAMERA
+                )
+            ) {
+                val builder = AlertDialog.Builder(requireContext())
+                builder.setMessage(getString(R.string.camera_permission_message))
+                    .setTitle(getString(R.string.camera_permission_title))
+
+                builder.setPositiveButton(
+                    getString(R.string.camera_permission_positive)
+                ) { _, _ ->
+                    cameraPermission.launch(CAMERA)
+                }
+                builder.setNegativeButton(getString(R.string.camera_permission_negative)) { a, _ ->
+                    a.dismiss()
+                }
+
+                val dialog = builder.create()
+                dialog.show()
+            } else if (!InstaPickerSharedPreference(requireContext()).getCameraPermission()) {
+                cameraPermission.launch(CAMERA)
+                InstaPickerSharedPreference(requireContext()).setCameraPermission()
+            } else {
+                Toast.makeText(
+                    requireContext(),
+                    getString(R.string.camera_permission_deny),
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                startActivity(Intent().apply {
+                    action = Settings.ACTION_APPLICATION_DETAILS_SETTINGS
+                    data = Uri.fromParts("package", requireActivity().packageName, null)
+                }
+                )
+                NavHostFragment.findNavController(this).popBackStack()
+            }
+        } else {
+            initCamera()
+        }
+    }
+
+
+    private fun initCamera() {
+        startCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+        b.cCapture.setOnClickListener { takePhoto() }
+
+        b.cClose.setOnClickListener { NavHostFragment.findNavController(this).popBackStack() }
+
+        b.cChange.setOnClickListener {
+            b.cFocus.visibility = View.INVISIBLE
+            isFront = if (isFront) {
+                startCamera(CameraSelector.DEFAULT_BACK_CAMERA)
+                false
+            } else {
+                startCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
+                true
+            }
+        }
+
+        b.cFlash.setOnClickListener {
+            when (flash) {
+                FlashMode.FLASH_OFF -> {
+                    flash = FlashMode.FLASH_AUTO
+                    b.cFlash.setImageResource(R.drawable.vector_flash_auto)
+                }
+                FlashMode.FLASH_AUTO -> {
+                    flash = FlashMode.FLASH_ON
+                    b.cFlash.setImageResource(R.drawable.vector_flash_on)
+                }
+                FlashMode.FLASH_ON -> {
+                    flash = FlashMode.FLASH_OFF
+                    b.cFlash.setImageResource(R.drawable.vector_flash_off)
+                }
+            }
+
+        }
+
+        outputDirectory = getOutputDirectory()
+        cameraExecutor = Executors.newSingleThreadExecutor()
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun startCamera(cameraSelector: CameraSelector) {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(requireActivity())
+        cameraProviderFuture.addListener({
+            val cameraProvider: ProcessCameraProvider = cameraProviderFuture.get()
+
+            val preview = Preview.Builder()
+                .build()
+                .also {
+                    it.setSurfaceProvider(b.cViewFinder.surfaceProvider)
+                }
+            imageCapture = Builder()
+                .build()
+            try {
+                cameraProvider.unbindAll()
+
+                val camera = cameraProvider.bindToLifecycle(
+                    requireActivity(), cameraSelector, preview, imageCapture
+                )
+
+                b.cViewFinder.afterMeasured {
+                    b.cViewFinder.setOnTouchListener { _, event ->
+                        return@setOnTouchListener when (event.action) {
+                            MotionEvent.ACTION_DOWN -> {
+                                true
+                            }
+                            MotionEvent.ACTION_UP -> {
+                                b.cFocus.visibility = View.VISIBLE
+                                val factory: MeteringPointFactory =
+                                    SurfaceOrientedMeteringPointFactory(
+                                        b.cViewFinder.width.toFloat(),
+                                        b.cViewFinder.height.toFloat()
+                                    )
+                                val autoFocusPoint = factory.createPoint(event.x, event.y)
+                                try {
+
+                                    camera.cameraControl.startFocusAndMetering(
+                                        FocusMeteringAction.Builder(
+                                            autoFocusPoint,
+                                            FocusMeteringAction.FLAG_AF
+                                        ).apply {
+                                            disableAutoCancel()
+                                        }.build()
+                                    )
+                                    b.cFocus.translationX = event.x - (b.cFocus.width / 2)
+                                    b.cFocus.translationY = event.y - (b.cFocus.height / 2)
+                                } catch (e: CameraInfoUnavailableException) {
+                                    e.printStackTrace()
+                                }
+                                true
+                            }
+                            else -> false
+                        }
+                    }
+                }
+            } catch (exc: Exception) {
+                exc.printStackTrace()
+            }
+
+        }, ContextCompat.getMainExecutor(requireActivity()))
+    }
+
+    private inline fun View.afterMeasured(crossinline block: () -> Unit) {
+        viewTreeObserver.addOnGlobalLayoutListener(object :
+            ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                if (measuredWidth > 0 && measuredHeight > 0) {
+                    viewTreeObserver.removeOnGlobalLayoutListener(this)
+                    block()
+                }
+            }
+        })
+    }
+
+    private fun takePhoto() {
+        val imageCapture = imageCapture ?: return
+
+        val photoFile = File.createTempFile(
+            SimpleDateFormat(FILENAME_FORMAT, Locale.US).format(System.currentTimeMillis()),
+            ".jpg",
+            outputDirectory
+        )
+
+        val outputOptions = OutputFileOptions.Builder(photoFile).build()
+
+        when (flash) {
+            FlashMode.FLASH_ON -> imageCapture.flashMode = FLASH_MODE_ON
+            FlashMode.FLASH_OFF -> imageCapture.flashMode = FLASH_MODE_OFF
+            FlashMode.FLASH_AUTO -> imageCapture.flashMode = FLASH_MODE_AUTO
+        }
+
+        imageCapture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(requireContext()),
+            object : OnImageSavedCallback {
+                override fun onError(exc: ImageCaptureException) {
+                    exc.printStackTrace()
+                }
+
+                override fun onImageSaved(output: OutputFileResults) {
+//                    startCropping(photoFile)
+                }
+            })
+    }
+
+
+
+
+    private fun getOutputDirectory(): File {
+        val mediaDir = requireActivity().externalMediaDirs.firstOrNull()?.let {
+            File(it, resources.getString(R.string.app_name)).apply { mkdirs() }
+        }
+        return if (mediaDir != null && mediaDir.exists())
+            mediaDir else requireActivity().filesDir
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        cameraExecutor.shutdown()
+    }
+
+}
